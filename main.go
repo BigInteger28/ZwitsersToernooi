@@ -435,24 +435,41 @@ func updateMatchResults(matches []Match, results []Result) {
 
 func sortMatches(matches []Match) {
     sort.Slice(matches, func(i, j int) bool {
-        // Controleer of een match een "Bye" bevat
+        // Bye altijd onderaan
         isByeI := matches[i].Player2.Name == "Bye"
         isByeJ := matches[j].Player2.Name == "Bye"
-
-        // Als een van de twee een "Bye" is, geef voorrang aan de match zonder "Bye"
         if isByeI != isByeJ {
-            return !isByeI // Geen "Bye" komt voor een "Bye"
+            return !isByeI // geen Bye komt eerst
+        }
+        if isByeI {
+            return false
         }
 
-        // Als beide geen "Bye" zijn of beide wel, sorteer op punten
-        sumI := matches[i].Player1.Punten
-        sumJ := matches[j].Player1.Punten
-        if !isByeI { // Alleen optellen als het geen "Bye" is
-            sumI += matches[i].Player2.Punten
-            sumJ += matches[j].Player2.Punten
+        // === NIEUWE SORTERING: hoogste rating speler eerst ===
+        maxI := matches[i].Player1.Rating
+        if matches[i].Player2.Rating > maxI {
+            maxI = matches[i].Player2.Rating
+        }
+        maxJ := matches[j].Player1.Rating
+        if matches[j].Player2.Rating > maxJ {
+            maxJ = matches[j].Player2.Rating
         }
 
-        return sumI > sumJ // Hogere punten eerst
+        if maxI != maxJ {
+            return maxI > maxJ
+        }
+
+        // Secundair: som van ratings
+        sumRatingI := matches[i].Player1.Rating + matches[i].Player2.Rating
+        sumRatingJ := matches[j].Player1.Rating + matches[j].Player2.Rating
+        if sumRatingI != sumRatingJ {
+            return sumRatingI > sumRatingJ
+        }
+
+        // Tertiair: som van punten
+        sumI := matches[i].Player1.Punten + matches[i].Player2.Punten
+        sumJ := matches[j].Player1.Punten + matches[j].Player2.Punten
+        return sumI > sumJ
     })
 }
 
@@ -865,6 +882,7 @@ func main() {
         case "1":
             currentRound++
             lastMatches = pairPlayers(players)
+            sortMatches(lastMatches) // ← sortering op hoogste rating
             if err := generateRoundFile(currentRound, lastMatches); err != nil {
                 fmt.Println("Fout bij genereren ronde:", err)
             } else {
@@ -880,6 +898,7 @@ func main() {
             currentRound++
             finalMatch := Match{Player1: players[0], Player2: players[1], Result: "0-0"}
             lastMatches = []Match{finalMatch}
+            sortMatches(lastMatches) // ← sortering op hoogste rating
             if err := generateRoundFile(currentRound, lastMatches); err != nil {
                 fmt.Println("Fout bij genereren finale ronde:", err)
             } else {
