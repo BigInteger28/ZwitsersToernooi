@@ -4,6 +4,7 @@ import (
     "bufio"
     "fmt"
     "html/template"
+    "math/rand"
     "os"
     "sort"
     "strconv"
@@ -371,6 +372,220 @@ func readRoundResults(filename string) ([]Result, error) {
         })
     }
     return results, scanner.Err()
+}
+
+// ===== ENGINES SPELEN (port van de logica in index.html) =====
+
+// Engine met vaste zetten (letters) gevolgd door diepte-cijfers; 12 tekens
+type Engine struct {
+    Name  string
+    Level int
+    Moves []interface{} // string (WVALD) of int (0-9)
+}
+
+var elementOrder = []string{"W", "V", "A", "L", "D"}
+
+// Wie wint: scoreMatrix[a][b] = 0 (a wint), 1 (b wint), -1 (gelijk/geen punt)
+var scoreMatrix = map[string]map[string]int{
+    "W": {"W": -1, "V": 0, "A": -1, "L": 1, "D": -1},
+    "V": {"W": 1, "V": -1, "A": 0, "L": -1, "D": -1},
+    "A": {"W": -1, "V": 1, "A": -1, "L": 0, "D": -1},
+    "L": {"W": 0, "V": -1, "A": 1, "L": -1, "D": -1},
+    "D": {"W": -1, "V": -1, "A": -1, "L": -1, "D": -1},
+}
+
+var depthMove = map[string][]string{
+    "W": {"W", "L", "A", "V", "W", "L", "A", "V"},
+    "V": {"V", "W", "L", "A", "V", "W", "L", "A"},
+    "A": {"A", "V", "W", "L", "A", "V", "W", "L"},
+    "L": {"L", "A", "V", "W", "L", "A", "V", "W"},
+    "D": {"L", "A", "V", "W", "L", "A", "V", "W"},
+}
+
+// Engines inlezen: eerste regel = aantal levels per bonuspunt, daarna naam:level:zetten
+func readEngines(filename string) (map[string]Engine, int, error) {
+    file, err := os.Open(filename)
+    if err != nil {
+        return nil, 0, err
+    }
+    defer file.Close()
+
+    engines := make(map[string]Engine)
+    levelsPerPoint := 0
+    first := true
+    scanner := bufio.NewScanner(file)
+    for scanner.Scan() {
+        line := strings.TrimSpace(scanner.Text())
+        if line == "" {
+            continue
+        }
+        if first {
+            first = false
+            levelsPerPoint, _ = strconv.Atoi(line)
+            continue
+        }
+        parts := strings.Split(line, ":")
+        if len(parts) < 3 {
+            continue
+        }
+        name := strings.TrimSpace(parts[0])
+        level, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
+        moves := strings.ToUpper(strings.TrimSpace(parts[2]))
+        if len(moves) < 12 {
+            continue
+        }
+        moves = moves[:12]
+        valid := true
+        seenDigit := false
+        var list []interface{}
+        for _, c := range moves {
+            switch {
+            case c >= '0' && c <= '9':
+                seenDigit = true
+                list = append(list, int(c-'0'))
+            case strings.ContainsRune("WVALD", c) && !seenDigit:
+                list = append(list, string(c))
+            default:
+                valid = false
+            }
+        }
+        if !valid {
+            fmt.Printf("Engine %q overgeslagen: ongeldige zetten %q\n", name, moves)
+            continue
+        }
+        engines[name] = Engine{Name: name, Level: level, Moves: list}
+    }
+    return engines, levelsPerPoint, scanner.Err()
+}
+
+func firstLeft(left map[string]int, from []string) string {
+    for _, e := range from {
+        if left[e] > 0 {
+            return e
+        }
+    }
+    return ""
+}
+
+func engineMove(e Engine, cardsPlayed int, otherMoves string, left map[string]int) string {
+    if cardsPlayed == 12 {
+        return firstLeft(left, elementOrder)
+    }
+    mv := e.Moves[cardsPlayed]
+    if s, ok := mv.(string); ok {
+        return s
+    }
+    move := mv.(int)
+    sym := "_WVALD"
+
+    if move >= 6 && move <= 9 {
+        base := move - 5
+        if cardsPlayed < 2 {
+            return string(sym[base])
+        }
+        if e := firstLeft(left, depthMove[string(otherMoves[cardsPlayed-2])][base:]); e != "" {
+            return e
+        }
+    }
+    if cardsPlayed == 0 {
+        if move > 0 && move < len(sym) {
+            return string(sym[move])
+        }
+        return elementOrder[rand.Intn(5)]
+    }
+    if move == 5 && left["D"] > 0 {
+        return "D"
+    }
+    if move >= 1 && move <= 4 {
+        if e := firstLeft(left, depthMove[string(otherMoves[cardsPlayed-1])][move:]); e != "" {
+            return e
+        }
+    }
+    r := rand.Intn(5)
+    for i := 0; i < 5; i++ {
+        el := elementOrder[r]
+        if left[el] > 0 {
+            return el
+        }
+        r = (r + 1) % 5
+    }
+    return firstLeft(left, elementOrder)
+}
+
+// Speelt één partij; geeft score1, score2 terug inclusief levelbonus voor de hoogste level
+func playEngineGame(e1, e2 Engine, levelsPerPoint int) (int, int) {
+    left := [2]map[string]int{
+        {"W": 3, "V": 3, "A": 3, "L": 3, "D": 1},
+        {"W": 3, "V": 3, "A": 3, "L": 3, "D": 1},
+    }
+    engines := [2]Engine{e1, e2}
+    moves := [2]string{"", ""}
+    score := [2]int{0, 0}
+
+    for card := 0; card < 13; card++ {
+        var next [2]string
+        for i := 0; i < 2; i++ {
+            next[i] = engineMove(engines[i], card, moves[i^1], left[i])
+        }
+        for i := 0; i < 2; i++ {
+            moves[i] += next[i]
+            left[i][next[i]]--
+        }
+        if w := scoreMatrix[next[0]][next[1]]; w != -1 {
+            score[w]++
+        }
+    }
+
+    if levelsPerPoint > 0 {
+        bonus := (e1.Level - e2.Level) / levelsPerPoint // Go deelt naar 0 (zoals Math.trunc)
+        if bonus > 0 {
+            score[0] += bonus
+        } else if bonus < 0 {
+            score[1] -= bonus
+        }
+    }
+    return score[0], score[1]
+}
+
+// Vult de scores in rondeX.txt in door de engines tegen elkaar te laten spelen.
+// Partijen waarvan een speler niet in engines.txt staat (en de Bye) worden overgeslagen.
+func playEnginesRound(round int, engineFile string) error {
+    engines, levelsPerPoint, err := readEngines(engineFile)
+    if err != nil {
+        return err
+    }
+    filename := fmt.Sprintf("ronde%d.txt", round)
+    data, err := os.ReadFile(filename)
+    if err != nil {
+        return err
+    }
+
+    lines := strings.Split(string(data), "\n")
+    played, skipped := 0, 0
+    for i, line := range lines {
+        parts := strings.Split(line, "   ")
+        if len(parts) != 3 {
+            continue
+        }
+        p1 := strings.Split(parts[0], " LVL")[0]
+        p2 := strings.Split(parts[2], " LVL")[0]
+        e1, ok1 := engines[p1]
+        e2, ok2 := engines[p2]
+        if p2 == "Bye" || !ok1 || !ok2 {
+            fmt.Printf("Overgeslagen: %s - %s\n", p1, p2)
+            skipped++
+            continue
+        }
+        s1, s2 := playEngineGame(e1, e2, levelsPerPoint)
+        lines[i] = fmt.Sprintf("%s   %d-%d   %s", parts[0], s1, s2, parts[2])
+        fmt.Printf("%s %d-%d %s\n", p1, s1, s2, p2)
+        played++
+    }
+    if err := os.WriteFile(filename, []byte(strings.Join(lines, "\n")), 0644); err != nil {
+        return err
+    }
+    fmt.Printf("%d partijen gespeeld, %d overgeslagen. Scores staan in %s\n", played, skipped, filename)
+    return nil
 }
 
 // Spelers updaten met Punten, Matchscore en RatOpp
@@ -859,11 +1074,12 @@ func main() {
         fmt.Println("\nMenu:")
         fmt.Println("0. Verander huidige rondenr")
         fmt.Println("1. Genereer nieuwe ronde")
-        fmt.Println("2. Genereer finale ronde")
+        fmt.Println("2. Speel engines tegen elkaar (vult scores in rondeX.txt)")
         fmt.Println("3. Verwerk scores van huidige ronde")
         fmt.Println("4. Genereer HTML")
-        fmt.Println("5. Genereer overview + new_ratings")
-        fmt.Println("6. Exit")
+        fmt.Println("5. Genereer finale ronde")
+        fmt.Println("6. Genereer overview + new_ratings")
+        fmt.Println("7. Exit")
         fmt.Print("Kies een optie: ")
 
         var choice string
@@ -933,7 +1149,7 @@ func main() {
                 fmt.Printf("Ronde %d gegenereerd. Vul de scores in in ronde%d.txt\n", currentRound, currentRound)
             }
 
-        case "2":
+        case "5":
             sortPlayers(players)
             if len(players) < 2 {
                 fmt.Println("Niet genoeg spelers voor finale")
@@ -975,7 +1191,7 @@ func main() {
                 fmt.Println("HTML gegenereerd voor ronde", currentRound)
             }
 
-        case "5":
+        case "6":
             // Verzamel alle resultaten van alle rondes
             var allResults [][]Result
             for r := 1; r <= currentRound; r++ {
@@ -998,7 +1214,14 @@ func main() {
                 fmt.Println("Rating update HTML gegenereerd in 'overview.html'")
             }
 
-        case "6":
+        case "2":
+            if currentRound == 0 {
+                fmt.Println("Geen huidige ronde. Genereer of laad eerst een ronde.")
+            } else if err := playEnginesRound(currentRound, "engines.txt"); err != nil {
+                fmt.Println("Fout bij spelen engines:", err)
+            }
+
+        case "7":
             fmt.Println("Exit")
             os.Exit(0)
 
